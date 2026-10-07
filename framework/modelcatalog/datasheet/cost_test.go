@@ -6519,4 +6519,12 @@ func TestSubscriptionProviders_ModelListingPricing(t *testing.T) {
 	assert.InDelta(t, 0.000005, *entry.InputCostPerToken, 1e-12)
 
 	assert.Nil(t, s.GetPricingEntryForModel("claude-opus-4-6-thinking", schemas.OpenRouter))
+
+	// The management catalog (Models page) reads prices through the capability entry.
+	capability := s.GetCapabilityEntry("claude-opus-4.6", schemas.Kiro)
+	require.NotNil(t, capability)
+	require.NotNil(t, capability.OutputCostPerToken)
+	assert.InDelta(t, 0.000025, *capability.OutputCostPerToken, 1e-12)
+	assert.Nil(t, s.GetCapabilityEntry("kiro-auto", schemas.Kiro))
+	assert.Nil(t, s.GetCapabilityEntry("claude-opus-4.6", schemas.OpenRouter))
 }

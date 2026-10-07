@@ -214,7 +214,8 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 // modes, etc.) for a (model, provider) pair. Prefers chat → responses →
 // text-completion entries; falls back to the lexicographically first mode if
 // none of the preferred modes match. Tries the exact model first, then the
-// canonical base model.
+// canonical base model. Subscription gateways (kiro, antigravity) finally fall
+// back to the upstream model's row.
 func (s *Store) GetCapabilityEntry(model string, provider schemas.ModelProvider) *Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -233,6 +234,13 @@ func (s *Store) GetCapabilityEntry(model string, provider schemas.ModelProvider)
 
 	if entry := s.capabilityEntryForFamilyUnsafe(baseModel, provider); entry != nil {
 		return entry
+	}
+	if isSubscriptionPricingProvider(string(provider)) {
+		for _, mode := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ResponsesRequest, schemas.TextCompletionRequest} {
+			if pricing, ok := s.subscriptionBasePricing(model, normalizeRequestType(mode), "", false); ok {
+				return convertTablePricingToEntry(pricing)
+			}
+		}
 	}
 	return nil
 }
