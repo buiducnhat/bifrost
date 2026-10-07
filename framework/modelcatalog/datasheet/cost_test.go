@@ -6420,3 +6420,103 @@ func TestCalculateCost_QueuedVideoIsNotBilledAtSubmission(t *testing.T) {
 	terminal.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
 	assert.InDelta(t, 5.60, s.CalculateCost(terminal, nil), 1e-9)
 }
+
+// subscriptionTestStore seeds upstream-vendor rows (no kiro/antigravity rows) with their
+// base models and rebuilds the derived indexes, the way a datasheet load does.
+func subscriptionTestStore() *Store {
+	row := func(model, provider, mode, base string, in, out *float64) configstoreTables.TableModelPricing {
+		return configstoreTables.TableModelPricing{Model: model, Provider: provider, Mode: mode, BaseModel: base, InputCostPerToken: in, OutputCostPerToken: out}
+	}
+	rows := []configstoreTables.TableModelPricing{
+		row("claude-opus-4-6", "anthropic", "chat", "claude-opus-4-6", bifrost.Ptr(0.000005), bifrost.Ptr(0.000025)),
+		row("claude-opus-4-6", "bedrock", "chat", "claude-opus-4-6", bifrost.Ptr(0.9), bifrost.Ptr(0.9)),
+		row("claude-sonnet-4-5", "anthropic", "chat", "claude-sonnet-4-5", bifrost.Ptr(0.000003), bifrost.Ptr(0.000015)),
+		row("claude-sonnet-4-5-20250929", "anthropic", "chat", "claude-sonnet-4-5", bifrost.Ptr(0.000003), bifrost.Ptr(0.000015)),
+		row("gemini-3.1-pro-preview", "gemini", "chat", "gemini-3.1-pro", bifrost.Ptr(0.000002), bifrost.Ptr(0.000012)),
+		row("gemini-3.8-flash", "gemini", "chat", "gemini-3.8-flash", bifrost.Ptr(0.0000003), bifrost.Ptr(0.0000025)),
+		row("gpt-5.6-sol", "openai", "chat", "gpt-5.6-sol", bifrost.Ptr(0.000005), bifrost.Ptr(0.00003)),
+		// The datasheet's own subscription entry carries no rate; it must never win as the price.
+		row("gpt-5.6-sol", "chatgpt", "responses", "gpt-5.6-sol", nil, nil),
+		row("gpt-oss-120b", "cerebras", "chat", "gpt-oss-120b", bifrost.Ptr(0.00000035), bifrost.Ptr(0.00000075)),
+		row("gpt-oss-120b", "azure", "chat", "gpt-oss-120b", bifrost.Ptr(0.00000015), bifrost.Ptr(0.0000006)),
+		row("deepseek-v3.2", "deepseek", "chat", "deepseek", bifrost.Ptr(0.00000028), bifrost.Ptr(0.00000042)),
+		row("deepseek-v3.2", "azure", "chat", "deepseek", bifrost.Ptr(0.9), bifrost.Ptr(0.9)),
+		row("MiniMax-M2.5", "minimax", "chat", "minimax-m2.5", bifrost.Ptr(0.0000003), bifrost.Ptr(0.0000012)),
+		row("gemini-3.1-flash-image", "gemini", "image_generation", "gemini-3.1-flash-image", bifrost.Ptr(0.0000005), bifrost.Ptr(0.00006)),
+		row("claude-opus-4-8", "anthropic", "chat", "claude-opus-4-8", bifrost.Ptr(0.000005), bifrost.Ptr(0.000025)),
+		row("anthropic/claude-opus-4.8", "openrouter", "chat", "claude-opus-4.8", bifrost.Ptr(0.9), bifrost.Ptr(0.9)),
+		// openrouter's router row uses -1 as a "variable price" sentinel; it must never price "auto".
+		row("auto", "openrouter", "chat", "auto", bifrost.Ptr(-1.0), bifrost.Ptr(-1.0)),
+	}
+	s := newTestStore()
+	for _, r := range rows {
+		s.pricingData[makeKey(r.Model, r.Provider, r.Mode)] = r
+	}
+	s.rebuildDatasheetViewUnsafe()
+	return s
+}
+
+func TestSubscriptionProviders_InheritUpstreamPricing(t *testing.T) {
+	s := subscriptionTestStore()
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		mode     schemas.RequestType
+		wantRow  string // upstream "provider/model" the price must come from; "" means unpriced
+	}{
+		{"kiro dotted claude version", schemas.Kiro, "claude-sonnet-4.5", schemas.ChatCompletionRequest, "anthropic/claude-sonnet-4-5"},
+		{"kiro prefixed and dated", schemas.Kiro, "kiro/claude-sonnet-4.5-20250929", schemas.ChatCompletionRequest, "anthropic/claude-sonnet-4-5-20250929"},
+		{"kiro effort suffix", schemas.Kiro, "gpt-5.6-sol-high", schemas.ChatCompletionRequest, "openai/gpt-5.6-sol"},
+		{"kiro responses falls back to chat row, skipping the rate-less chatgpt row", schemas.Kiro, "gpt-5.6-sol", schemas.ResponsesRequest, "openai/gpt-5.6-sol"},
+		{"kiro deepseek missing v prefers first-party over mislabeled base", schemas.Kiro, "deepseek-3.2", schemas.ChatCompletionRequest, "deepseek/deepseek-v3.2"},
+		{"kiro case-insensitive vendor name", schemas.Kiro, "minimax-m2.5", schemas.ChatCompletionRequest, "minimax/MiniMax-M2.5"},
+		{"kiro router has no price", schemas.Kiro, "kiro-auto", schemas.ChatCompletionRequest, ""},
+		{"kiro dotted id also spelled by a reseller prefers the vendor", schemas.Kiro, "claude-opus-4.8", schemas.ChatCompletionRequest, "anthropic/claude-opus-4-8"},
+		{"antigravity thinking suffix prefers first-party over bedrock", schemas.Antigravity, "claude-opus-4-6-thinking", schemas.ChatCompletionRequest, "anthropic/claude-opus-4-6"},
+		{"antigravity tier suffix maps to base model", schemas.Antigravity, "gemini-3.8-flash-low", schemas.ChatCompletionRequest, "gemini/gemini-3.8-flash"},
+		{"antigravity base model differs from catalog name", schemas.Antigravity, "gemini-3.1-pro", schemas.ChatCompletionRequest, "gemini/gemini-3.1-pro-preview"},
+		{"antigravity wire alias", schemas.Antigravity, "gemini-pro-agent", schemas.ChatCompletionRequest, "gemini/gemini-3.1-pro-preview"},
+		{"antigravity open-weights picks deterministically without first-party row", schemas.Antigravity, "gpt-oss-120b-medium", schemas.ChatCompletionRequest, "azure/gpt-oss-120b"},
+		{"antigravity image model", schemas.Antigravity, "gemini-3.1-flash-image", schemas.ImageGenerationRequest, "gemini/gemini-3.1-flash-image"},
+		{"antigravity unknown model", schemas.Antigravity, "gemini-9-ultra", schemas.ChatCompletionRequest, ""},
+		// The upstream fallback is for subscription gateways only; other providers keep exact matching.
+		{"other provider does not inherit", schemas.OpenRouter, "claude-opus-4-6", schemas.ChatCompletionRequest, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := s.getBasePricing(tc.model, string(tc.provider), tc.mode)
+			if tc.wantRow == "" {
+				assert.False(t, ok, "expected no pricing, got %+v", got)
+				return
+			}
+			require.True(t, ok, "expected pricing for %s/%s", tc.provider, tc.model)
+			assert.Equal(t, tc.wantRow, got.Provider+"/"+got.Model)
+		})
+	}
+}
+
+func TestSubscriptionProviders_CostUsesUpstreamRates(t *testing.T) {
+	s := subscriptionTestStore()
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Kiro, schemas.Antigravity} {
+		cost := s.CalculateCost(makeChatResponse(provider, "claude-opus-4-6-thinking", usage), nil)
+		// 1000 * $5/M + 100 * $25/M
+		assert.InDelta(t, 0.0075, cost, 1e-9, "%s must be priced at Anthropic list price", provider)
+	}
+
+	assert.Zero(t, s.CalculateCost(makeChatResponse(schemas.Kiro, "kiro-auto", usage), nil), "router model has no list price")
+}
+
+func TestSubscriptionProviders_ModelListingPricing(t *testing.T) {
+	s := subscriptionTestStore()
+
+	entry := s.GetPricingEntryForModel("claude-opus-4-6-thinking", schemas.Antigravity)
+	require.NotNil(t, entry)
+	require.NotNil(t, entry.InputCostPerToken)
+	assert.InDelta(t, 0.000005, *entry.InputCostPerToken, 1e-12)
+
+	assert.Nil(t, s.GetPricingEntryForModel("claude-opus-4-6-thinking", schemas.OpenRouter))
+}

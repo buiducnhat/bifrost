@@ -59,6 +59,7 @@ type Store struct {
 	mu                     sync.RWMutex
 	pricingData            map[string]configstoreTables.TableModelPricing // model|provider|mode → row
 	baseModelIndex         map[string]string                              // model → canonical base name
+	pricingKeysByBase      map[string][]string                            // lower(base model)|mode → pricingData keys; used by subscription pricing
 	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
 	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
 
@@ -178,7 +179,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	catalogProvider := normalizeProvider(string(provider))
-	for _, mode := range []schemas.RequestType{
+	modes := []schemas.RequestType{
 		schemas.TextCompletionRequest,
 		schemas.ChatCompletionRequest,
 		schemas.ResponsesRequest,
@@ -192,10 +193,18 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.ImageVariationRequest,
 		schemas.VideoGenerationRequest,
 		schemas.OCRRequest,
-	} {
+	}
+	for _, mode := range modes {
 		key := makeKey(model, catalogProvider, normalizeRequestType(mode))
 		if pricing, ok := s.pricingData[key]; ok {
 			return convertTablePricingToEntry(&pricing)
+		}
+	}
+	if isSubscriptionPricingProvider(catalogProvider) {
+		for _, mode := range modes {
+			if pricing, ok := s.subscriptionBasePricing(model, normalizeRequestType(mode), "", false); ok {
+				return convertTablePricingToEntry(pricing)
+			}
 		}
 	}
 	return nil
@@ -482,6 +491,7 @@ func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing
 // Called after every pricingData mutation in sync.go / params.go.
 func (s *Store) rebuildDatasheetViewUnsafe() {
 	s.baseModelIndex = make(map[string]string)
+	s.pricingKeysByBase = make(map[string][]string)
 	providerModels := make(map[schemas.ModelProvider]map[string]struct{})
 	deprecatedModels := make(map[schemas.ModelProvider]map[string]struct{})
 
@@ -503,6 +513,11 @@ func (s *Store) rebuildDatasheetViewUnsafe() {
 
 		if pricing.BaseModel != "" {
 			s.baseModelIndex[pricing.Model] = pricing.BaseModel
+		}
+
+		if pricing.BaseModel != "" && hasUsablePricing(pricing) {
+			baseKey := pricingBaseKey(pricing.BaseModel, pricing.Mode)
+			s.pricingKeysByBase[baseKey] = append(s.pricingKeysByBase[baseKey], makeKey(pricing.Model, pricing.Provider, pricing.Mode))
 		}
 	}
 

@@ -2388,6 +2388,15 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		}
 	}
 
+	// Subscription gateways (kiro, antigravity) have no datasheet rows of their own;
+	// price them at the upstream model's list price.
+	if isSubscriptionPricingProvider(provider) {
+		s.logger.Debug("primary lookup failed, trying upstream pricing for subscription provider %s", provider)
+		if pricing, ok := s.subscriptionBasePricing(model, mode, fallbackMode, hasFallbackMode); ok {
+			return pricing, true
+		}
+	}
+
 	return nil, false
 }
 
