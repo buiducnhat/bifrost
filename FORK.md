@@ -61,6 +61,17 @@ docker run -p 8080:8080 -v "$PWD/data:/app/data" bifrost-plus
 
 Use `transports/Dockerfile.local`, which builds from this checkout. The default `transports/Dockerfile` (and the public `npx`/`maximhq/bifrost` images) compile against the published upstream modules and do **not** contain this fork's features.
 
+#### Releasing an image (GitHub Container Registry)
+
+`.github/workflows/fork-docker.yml` builds `transports/Dockerfile.local` on native amd64 and arm64 runners, publishes `ghcr.io/buiducnhat/bifrost:v<version>` (plus `latest` for versions without a `-suffix`) as one multi-arch image, and smoke-tests `/health` on the published tag. It needs no secrets: it logs in with the built-in `GITHUB_TOKEN`.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0     # or: Actions -> Fork Docker Release -> Run workflow (version 0.1.0)
+docker run -p 8080:8080 -v "$PWD/data:/app/data" ghcr.io/buiducnhat/bifrost:v0.1.0
+```
+
+The first push creates the package as private. To pull without logging in, set it to public once (GitHub profile -> Packages -> `bifrost` -> Package settings -> Change visibility); otherwise `docker login ghcr.io` with a token that has `read:packages`.
+
 ### Checking that everything still works
 
 ```bash
