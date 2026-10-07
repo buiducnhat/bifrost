@@ -119,3 +119,4 @@ Keep new fork code in new files where you can, register new configstore migratio
 - **feat (transports):** sign-in endpoints `POST /api/oauth-subscriptions/antigravity/{start,complete}` and `POST /api/oauth-subscriptions/kiro/{start,poll}`; refreshed credentials are written back to the key. Keys whose value is `env.VAR` are never overwritten.
 - **feat (ui):** Antigravity and Kiro providers with sign-in helpers in the key form, and a **Key Rotation** tab in the provider settings.
 - **chore:** build, verify and upstream-update scripts in `scripts/fork/`, and this guide.
+- **fix (ui):** Antigravity and Kiro provider icons now use the official brand artwork (`ui/public/images/antigravity.png`, `kiro.svg`).
